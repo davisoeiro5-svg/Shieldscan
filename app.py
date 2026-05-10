@@ -2,9 +2,59 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 import re
+import socket
+import ipaddress
+import os
+from collections import defaultdict
+import time
 
 app = Flask(__name__)
-CORS(app)  # Permite o frontend se comunicar com o backend
+CORS(app)
+
+# ─── Rate Limiting simples (em memória) ─────────────────────────────────────
+RATE_LIMIT_MAX = 10
+RATE_LIMIT_JANELA = 60
+
+requisicoes_por_ip = defaultdict(list)
+
+def verificar_rate_limit(ip: str) -> bool:
+    agora = time.time()
+    requisicoes_por_ip[ip] = [t for t in requisicoes_por_ip[ip] if agora - t < RATE_LIMIT_JANELA]
+    if len(requisicoes_por_ip[ip]) >= RATE_LIMIT_MAX:
+        return False
+    requisicoes_por_ip[ip].append(agora)
+    return True
+
+
+# ─── Proteção contra SSRF ────────────────────────────────────────────────────
+IPS_BLOQUEADOS = [
+    ipaddress.ip_network("127.0.0.0/8"),      # localhost
+    ipaddress.ip_network("10.0.0.0/8"),        # rede privada classe A
+    ipaddress.ip_network("172.16.0.0/12"),     # rede privada classe B
+    ipaddress.ip_network("192.168.0.0/16"),    # rede privada classe C
+    ipaddress.ip_network("169.254.0.0/16"),    # link-local / AWS metadata
+    ipaddress.ip_network("0.0.0.0/8"),         # endereços inválidos
+    ipaddress.ip_network("::1/128"),           # localhost IPv6
+    ipaddress.ip_network("fc00::/7"),          # rede privada IPv6
+]
+
+def ip_e_seguro(hostname: str) -> tuple:
+    try:
+        ip_str = socket.gethostbyname(hostname)
+        ip = ipaddress.ip_address(ip_str)
+        for rede in IPS_BLOQUEADOS:
+            if ip in rede:
+                return False, f"Endereço IP bloqueado por segurança: {ip_str}"
+        return True, ip_str
+    except socket.gaierror:
+        return False, "Não foi possível resolver o domínio."
+    except ValueError:
+        return False, "Endereço IP inválido."
+
+def extrair_hostname(url: str) -> str:
+    sem_esquema = url.replace("https://", "").replace("http://", "")
+    return sem_esquema.split("/")[0].split("?")[0].split(":")[0]
+
 
 # ─── Definição dos headers analisados ───────────────────────────────────────
 
@@ -50,15 +100,12 @@ HEADERS_INFO = {
 # ─── Funções auxiliares ──────────────────────────────────────────────────────
 
 def normalizar_url(url: str) -> str:
-    """Garante que a URL tenha um esquema válido."""
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     return url
 
-
 def calcular_score(resultados: dict) -> str:
-    """Calcula nota de A a D baseado nos headers presentes."""
     total = 0
     maximo = 0
     for key, r in resultados.items():
@@ -66,44 +113,20 @@ def calcular_score(resultados: dict) -> str:
         maximo += peso
         if r["status"] == "pass":
             total += peso
-
     percentual = (total / maximo) * 100 if maximo > 0 else 0
-
-    if percentual >= 85:
-        return "A"
-    elif percentual >= 65:
-        return "B"
-    elif percentual >= 40:
-        return "C"
-    else:
-        return "D"
-
+    if percentual >= 85: return "A"
+    elif percentual >= 65: return "B"
+    elif percentual >= 40: return "C"
+    else: return "D"
 
 def analisar_headers(headers_recebidos: dict) -> dict:
-    """Compara os headers recebidos com os esperados."""
-    # Normaliza as chaves para minúsculo
     headers_lower = {k.lower(): v for k, v in headers_recebidos.items()}
-
     resultados = {}
-
     for key, info in HEADERS_INFO.items():
         if key in headers_lower:
-            resultados[key] = {
-                "status": "pass",
-                "value": headers_lower[key],
-                "label": info["label"],
-                "desc": info["desc"],
-                "tip": info["tip"]
-            }
+            resultados[key] = {"status": "pass", "value": headers_lower[key], "label": info["label"], "desc": info["desc"], "tip": info["tip"]}
         else:
-            resultados[key] = {
-                "status": "fail",
-                "value": None,
-                "label": info["label"],
-                "desc": info["desc"],
-                "tip": info["tip"]
-            }
-
+            resultados[key] = {"status": "fail", "value": None, "label": info["label"], "desc": info["desc"], "tip": info["tip"]}
     return resultados
 
 
@@ -116,25 +139,38 @@ def index():
 
 @app.route("/scan", methods=["POST"])
 def scan():
-    dados = request.get_json()
 
+    # 1. Rate limiting
+    ip_cliente = request.headers.get("X-Forwarded-For", request.remote_addr)
+    ip_cliente = ip_cliente.split(",")[0].strip()
+
+    if not verificar_rate_limit(ip_cliente):
+        return jsonify({"erro": f"Limite de {RATE_LIMIT_MAX} requisições por minuto atingido. Aguarde um momento."}), 429
+
+    # 2. Validar corpo
+    dados = request.get_json()
     if not dados or "url" not in dados:
         return jsonify({"erro": "Nenhuma URL enviada."}), 400
 
     url = normalizar_url(dados["url"])
 
-    # Valida formato básico da URL
+    # 3. Validar formato
     if not re.match(r"https?://[^\s/$.?#].[^\s]*", url):
-        return jsonify({"erro": "URL inválida."}), 400
+        return jsonify({"erro": "URL inválida. Ex: exemplo.com"}), 400
 
+    # 4. Proteção SSRF
+    hostname = extrair_hostname(url)
+    seguro, mensagem = ip_e_seguro(hostname)
+    if not seguro:
+        return jsonify({"erro": f"URL bloqueada por segurança: {mensagem}"}), 403
+
+    # 5. Requisição
     try:
         resposta = requests.get(
             url,
-            timeout=10,
+            timeout=8,
             allow_redirects=True,
-            headers={
-                "User-Agent": "ShieldScan/1.0 Security Analyzer"
-            }
+            headers={"User-Agent": "ShieldScan/1.0 Security Analyzer"}
         )
 
         dominio = resposta.url.split("/")[2]
@@ -154,7 +190,7 @@ def scan():
     except requests.exceptions.ConnectionError:
         return jsonify({"erro": "Não foi possível conectar ao site. Verifique a URL."}), 400
     except requests.exceptions.Timeout:
-        return jsonify({"erro": "O site demorou demais para responder (timeout)."}), 408
+        return jsonify({"erro": "O site demorou demais para responder (timeout de 8s)."}), 408
     except Exception as e:
         return jsonify({"erro": f"Erro inesperado: {str(e)}"}), 500
 
@@ -162,7 +198,6 @@ def scan():
 # ─── Iniciar servidor ─────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("🛡️  ShieldScan API rodando em http://localhost:5000")
-    import os
-port = int(os.environ.get("PORT", 5000))
-app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 5000))
+    print(f"🛡️  ShieldScan API rodando na porta {port}")
+    app.run(host="0.0.0.0", port=port)
