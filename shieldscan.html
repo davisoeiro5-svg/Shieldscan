@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShieldScan — HTTP Security Analyzer</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow:wght@300;400;600;700;900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #060810;
+    --surface: #0b0f1a;
+    --card: #0f1420;
+    --border: #1a2035;
+    --accent: #00e5ff;
+    --accent-dim: rgba(0,229,255,0.08);
+    --accent-glow: rgba(0,229,255,0.15);
+    --green: #00ff88;
+    --green-dim: rgba(0,255,136,0.08);
+    --red: #ff4466;
+    --red-dim: rgba(255,68,102,0.08);
+    --yellow: #ffcc00;
+    --yellow-dim: rgba(255,204,0,0.08);
+    --text: #cdd6f4;
+    --muted: #45506b;
+    --mono: 'Share Tech Mono', monospace;
+    --sans: 'Barlow', sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    overflow-x: hidden;
+    cursor: crosshair;
+  }
+
+  /* Scanline overlay */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.08) 2px,
+      rgba(0,0,0,0.08) 4px
+    );
+    pointer-events: none;
+    z-index: 999;
+  }
+
+  /* Animated grid bg */
+  .grid-bg {
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,229,255,0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,229,255,0.025) 1px, transparent 1px);
+    background-size: 50px 50px;
+    animation: gridMove 20s linear infinite;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  @keyframes gridMove {
+    0% { background-position: 0 0; }
+    100% { background-position: 50px 50px; }
+  }
+
+  /* Glow orbs */
+  .orb {
+    position: fixed;
+    border-radius: 50%;
+    filter: blur(80px);
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.4;
+  }
+  .orb-1 { width: 400px; height: 400px; background: rgba(0,229,255,0.12); top: -100px; left: -100px; }
+  .orb-2 { width: 300px; height: 300px; background: rgba(0,255,136,0.08); bottom: 100px; right: -50px; }
+
+  .wrapper {
+    position: relative;
+    z-index: 1;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 0 20px 80px;
+  }
+
+  /* NAV */
+  nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 24px 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 80px;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--mono);
+    font-size: 18px;
+    color: var(--accent);
+    letter-spacing: 2px;
+  }
+
+  .logo-icon {
+    width: 32px;
+    height: 32px;
+    border: 2px solid var(--accent);
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    animation: pulse 3s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 8px rgba(0,229,255,0.4); }
+    50% { box-shadow: 0 0 20px rgba(0,229,255,0.8), 0 0 40px rgba(0,229,255,0.2); }
+  }
+
+  .nav-tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 1px;
+    border: 1px solid var(--border);
+    padding: 4px 10px;
+    border-radius: 2px;
+  }
+
+  /* HERO */
+  .hero {
+    text-align: center;
+    margin-bottom: 60px;
+  }
+
+  .hero-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 4px;
+    color: var(--accent);
+    text-transform: uppercase;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+  }
+
+  .hero-label::before, .hero-label::after {
+    content: '';
+    height: 1px;
+    width: 40px;
+    background: var(--accent);
+    opacity: 0.4;
+  }
+
+  h1 {
+    font-size: clamp(36px, 6vw, 72px);
+    font-weight: 900;
+    line-height: 1;
+    letter-spacing: -2px;
+    margin-bottom: 20px;
+  }
+
+  h1 .shield { color: var(--accent); }
+  h1 .scan {
+    color: transparent;
+    -webkit-text-stroke: 1px rgba(0,229,255,0.4);
+  }
+
+  .hero-desc {
+    font-size: 16px;
+    color: var(--muted);
+    font-weight: 300;
+    max-width: 480px;
+    margin: 0 auto 40px;
+    line-height: 1.7;
+  }
+
+  /* INPUT AREA */
+  .scan-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 6px 6px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    transition: border-color 0.3s, box-shadow 0.3s;
+    max-width: 640px;
+    margin: 0 auto;
+  }
+
+  .scan-box:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 30px rgba(0,229,255,0.1);
+  }
+
+  .scan-prefix {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--accent);
+    flex-shrink: 0;
+    opacity: 0.6;
+  }
+
+  #url-input {
+    flex: 1;
+    background: none;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 14px;
+    padding: 10px 0;
+  }
+
+  #url-input::placeholder { color: var(--muted); }
+
+  #scan-btn {
+    background: var(--accent);
+    color: var(--bg);
+    border: none;
+    border-radius: 6px;
+    padding: 12px 24px;
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: all 0.2s;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  #scan-btn:hover {
+    background: #33eeff;
+    box-shadow: 0 0 20px rgba(0,229,255,0.4);
+  }
+
+  #scan-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .hint {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 12px;
+  }
+
+  /* SCANNING ANIMATION */
+  .scanning {
+    display: none;
+    text-align: center;
+    padding: 48px 0;
+  }
+
+  .scan-ring {
+    width: 80px;
+    height: 80px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin: 0 auto 24px;
+    position: relative;
+  }
+
+  .scan-ring::after {
+    content: '🛡';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 24px;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .scan-text {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--accent);
+    animation: blink 1.2s ease-in-out infinite;
+  }
+
+  @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  /* RESULTS */
+  #results { display: none; margin-top: 48px; }
+
+  .result-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .result-url {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--accent);
+  }
+
+  .score-badge {
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 6px 16px;
+    border-radius: 4px;
+    font-weight: 700;
+    letter-spacing: 1px;
+  }
+
+  .score-a { background: var(--green-dim); color: var(--green); border: 1px solid rgba(0,255,136,0.3); }
+  .score-b { background: rgba(0,229,255,0.08); color: var(--accent); border: 1px solid rgba(0,229,255,0.3); }
+  .score-c { background: var(--yellow-dim); color: var(--yellow); border: 1px solid rgba(255,204,0,0.3); }
+  .score-d { background: var(--red-dim); color: var(--red); border: 1px solid rgba(255,68,102,0.3); }
+
+  /* Summary bar */
+  .summary-bar {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+
+  .summary-stat {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    text-align: center;
+  }
+
+  .summary-stat .num {
+    font-family: var(--mono);
+    font-size: 28px;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+
+  .summary-stat .label {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .num-pass { color: var(--green); }
+  .num-fail { color: var(--red); }
+  .num-warn { color: var(--yellow); }
+
+  /* Header cards */
+  .headers-grid { display: flex; flex-direction: column; gap: 12px; }
+
+  .header-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    transition: border-color 0.2s;
+    animation: slideIn 0.4s ease both;
+  }
+
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .header-card:hover { border-color: rgba(0,229,255,0.2); }
+
+  .header-card.pass { border-left: 3px solid var(--green); }
+  .header-card.fail { border-left: 3px solid var(--red); }
+  .header-card.warn { border-left: 3px solid var(--yellow); }
+
+  .card-top {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 20px;
+    cursor: pointer;
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .pass .status-dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .fail .status-dot { background: var(--red); box-shadow: 0 0 8px var(--red); }
+  .warn .status-dot { background: var(--yellow); box-shadow: 0 0 8px var(--yellow); }
+
+  .header-name {
+    font-family: var(--mono);
+    font-size: 13px;
+    flex: 1;
+  }
+
+  .pass .header-name { color: var(--green); }
+  .fail .header-name { color: var(--red); }
+  .warn .header-name { color: var(--yellow); }
+
+  .header-status {
+    font-size: 11px;
+    font-family: var(--mono);
+    padding: 3px 10px;
+    border-radius: 2px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .pass .header-status { background: var(--green-dim); color: var(--green); }
+  .fail .header-status { background: var(--red-dim); color: var(--red); }
+  .warn .header-status { background: var(--yellow-dim); color: var(--yellow); }
+
+  .card-expand { font-size: 12px; color: var(--muted); transition: transform 0.3s; margin-left: 8px; }
+  .header-card.open .card-expand { transform: rotate(180deg); }
+
+  .card-body {
+    display: none;
+    padding: 0 20px 20px;
+    border-top: 1px solid var(--border);
+  }
+
+  .header-card.open .card-body { display: block; }
+
+  .card-body p {
+    font-size: 13px;
+    color: #8892a4;
+    line-height: 1.7;
+    margin: 14px 0 10px;
+  }
+
+  .value-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 10px 14px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent);
+    word-break: break-all;
+    margin-bottom: 10px;
+  }
+
+  .tip-box {
+    background: rgba(255,204,0,0.05);
+    border: 1px solid rgba(255,204,0,0.15);
+    border-radius: 4px;
+    padding: 10px 14px;
+    font-size: 12px;
+    color: #a89030;
+    line-height: 1.6;
+  }
+
+  .tip-box strong { color: var(--yellow); }
+
+  /* Footer */
+  footer {
+    margin-top: 80px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  footer span {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  footer .made {
+    color: var(--accent);
+    opacity: 0.6;
+  }
+
+  /* Error */
+  .error-box {
+    background: var(--red-dim);
+    border: 1px solid rgba(255,68,102,0.3);
+    border-radius: 6px;
+    padding: 16px 20px;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--red);
+    display: none;
+    margin-top: 16px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div class="grid-bg"></div>
+<div class="orb orb-1"></div>
+<div class="orb orb-2"></div>
+
+<div class="wrapper">
+  <nav>
+    <div class="logo">
+      <div class="logo-icon">🛡</div>
+      SHIELDSCAN
+    </div>
+    <div class="nav-tag">v1.0 — HTTP SECURITY ANALYZER</div>
+  </nav>
+
+  <div class="hero">
+    <div class="hero-label">Cybersecurity Tool</div>
+    <h1><span class="shield">Shield</span><span class="scan">Scan</span></h1>
+    <p class="hero-desc">Analise os headers de segurança HTTP de qualquer site em segundos. Descubra vulnerabilidades e saiba como corrigi-las.</p>
+
+    <div class="scan-box">
+      <span class="scan-prefix">https://</span>
+      <input type="text" id="url-input" placeholder="exemplo.com" autocomplete="off" spellcheck="false" />
+      <button id="scan-btn" onclick="startScan()">▶ Scan</button>
+    </div>
+    <div class="hint">// pressione Enter para escanear</div>
+    <div class="error-box" id="error-box">⚠ URL inválida ou inacessível. Tente sem www ou verifique o endereço.</div>
+  </div>
+
+  <!-- Scanning animation -->
+  <div class="scanning" id="scanning">
+    <div class="scan-ring"></div>
+    <div class="scan-text">ANALISANDO HEADERS...</div>
+  </div>
+
+  <!-- Results -->
+  <div id="results">
+    <div class="result-header">
+      <div class="result-url" id="result-url"></div>
+      <div class="score-badge" id="score-badge"></div>
+    </div>
+
+    <div class="summary-bar">
+      <div class="summary-stat">
+        <div class="num num-pass" id="count-pass">0</div>
+        <div class="label">Presentes</div>
+      </div>
+      <div class="summary-stat">
+        <div class="num num-fail" id="count-fail">0</div>
+        <div class="label">Ausentes</div>
+      </div>
+      <div class="summary-stat">
+        <div class="num num-warn" id="count-warn">0</div>
+        <div class="label">Avisos</div>
+      </div>
+    </div>
+
+    <div class="headers-grid" id="headers-grid"></div>
+  </div>
+
+  <footer>
+    <span>// SHIELDSCAN — HTTP SECURITY ANALYZER</span>
+    <span class="made">Feito com 🛡 por você + Claude</span>
+  </footer>
+</div>
+
+<script>
+
+
+// ─── Configuração ────────────────────────────────────────────────────────────
+const API_URL = 'http://localhost:5000/scan'; // Troque pela URL do servidor em produção
+
+// ─── Utilitários ─────────────────────────────────────────────────────────────
+
+function toggleCard(el) {
+  el.closest('.header-card').classList.toggle('open');
+}
+
+function isValidUrl(str) {
+  try {
+    const s = str.startsWith('http') ? str : 'https://' + str;
+    new URL(s);
+    return true;
+  } catch { return false; }
+}
+
+// ─── Renderização ─────────────────────────────────────────────────────────────
+
+function renderResults(data) {
+  document.getElementById('results').style.display = 'block';
+  document.getElementById('result-url').textContent = '// ' + data.url;
+
+  // Score
+  const badge = document.getElementById('score-badge');
+  badge.textContent = 'Score: ' + data.score;
+  badge.className = 'score-badge score-' + data.score.toLowerCase();
+
+  // Contadores
+  let pass = 0, fail = 0, warn = 0;
+  Object.values(data.resultados).forEach(r => {
+    if (r.status === 'pass') pass++;
+    else if (r.status === 'fail') fail++;
+    else warn++;
+  });
+  document.getElementById('count-pass').textContent = pass;
+  document.getElementById('count-fail').textContent = fail;
+  document.getElementById('count-warn').textContent = warn;
+
+  // Cards — fail primeiro
+  const sorted = Object.entries(data.resultados).sort((a, b) => {
+    const order = { fail: 0, warn: 1, pass: 2 };
+    return order[a[1].status] - order[b[1].status];
+  });
+
+  const grid = document.getElementById('headers-grid');
+  grid.innerHTML = '';
+
+  sorted.forEach(([key, r], i) => {
+    const statusLabel = r.status === 'pass' ? 'Presente' : r.status === 'fail' ? 'Ausente' : 'Aviso';
+    const card = document.createElement('div');
+    card.className = 'header-card ' + r.status;
+    card.style.animationDelay = (i * 0.07) + 's';
+
+    card.innerHTML = `
+      <div class="card-top" onclick="toggleCard(this)">
+        <div class="status-dot"></div>
+        <div class="header-name">${r.label}</div>
+        <div class="header-status">${statusLabel}</div>
+        <div class="card-expand">▼</div>
+      </div>
+      <div class="card-body">
+        <p>${r.desc}</p>
+        ${r.value ? `<div class="value-box">${r.value}</div>` : ''}
+        ${r.status !== 'pass' ? `<div class="tip-box">💡 <strong>Como corrigir:</strong> ${r.tip}</div>` : ''}
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+
+  document.getElementById('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ─── Scan principal ───────────────────────────────────────────────────────────
+
+async function startScan() {
+  const raw = document.getElementById('url-input').value.trim();
+  const errorBox = document.getElementById('error-box');
+  errorBox.style.display = 'none';
+
+  if (!raw) {
+    errorBox.textContent = '⚠ Digite uma URL para escanear.';
+    errorBox.style.display = 'block';
+    return;
+  }
+
+  if (!isValidUrl(raw)) {
+    errorBox.textContent = '⚠ URL inválida. Ex: exemplo.com ou https://exemplo.com';
+    errorBox.style.display = 'block';
+    return;
+  }
+
+  document.getElementById('scan-btn').disabled = true;
+  document.getElementById('results').style.display = 'none';
+  document.getElementById('scanning').style.display = 'block';
+
+  try {
+    const response = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: raw })
+    });
+
+    const data = await response.json();
+
+    document.getElementById('scanning').style.display = 'none';
+    document.getElementById('scan-btn').disabled = false;
+
+    if (data.erro) {
+      errorBox.textContent = '⚠ ' + data.erro;
+      errorBox.style.display = 'block';
+      return;
+    }
+
+    renderResults(data);
+
+  } catch (err) {
+    document.getElementById('scanning').style.display = 'none';
+    document.getElementById('scan-btn').disabled = false;
+    errorBox.textContent = '⚠ Não foi possível conectar ao servidor. Verifique se o backend está rodando.';
+    errorBox.style.display = 'block';
+  }
+}
+
+// Enter key
+document.getElementById('url-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') startScan();
+});
+</script>
+</body>
+</html>
